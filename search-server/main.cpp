@@ -454,7 +454,7 @@ void TestMatchingDocuments() {
     {
         SearchServer server;
         server.AddDocument(doc_id, content, DocumentStatus::ACTUAL, ratings);
-        const auto [words, status] = server.MatchDocument("fluffy cat", doc_id);
+        const vector<string> words = get<vector<string>>(server.MatchDocument("fluffy cat", doc_id));
         ASSERT_EQUAL(words.size(), 2);
     }
     // Если есть соответствие хотя бы по одному минус-слову, должен возвращаться пустой список слов.
@@ -521,6 +521,59 @@ void TestPredicatFiltrating() {
     const string content = "cat in the city"s;
     const string query = "cat in the city"s;
 
+    // с помощью предиката должен быть реализован поиск по лямбда-функции
+    {  
+        SearchServer server;
+        server.AddDocument(1, content, DocumentStatus::ACTUAL, rating);
+        server.AddDocument(2, content, DocumentStatus::IRRELEVANT, rating);
+        server.AddDocument(3, content, DocumentStatus::BANNED, rating);
+        server.AddDocument(4, content, DocumentStatus::REMOVED, rating);
+
+        vector<Document> even_docs = server.FindTopDocuments(query, []( int document_id, [[maybe_unused]] DocumentStatus status, [[maybe_unused]] int rating) {
+            return document_id % 2 == 0;
+        });
+        ASSERT_EQUAL_HINT(even_docs.size(), 2, "Вывод документов с четным id с помощью предиката"s);
+        ASSERT_EQUAL(even_docs[0].id, 2);
+        ASSERT_EQUAL(even_docs[1].id, 4);
+
+        vector<Document> irrelevant_docs = server.FindTopDocuments(query, []([[maybe_unused]] int document_id, DocumentStatus status, [[maybe_unused]] int rating) {
+            return status == DocumentStatus::IRRELEVANT;
+        });
+        ASSERT_EQUAL_HINT(static_cast<int>(irrelevant_docs.size()), 1, "Вывод документов по статусу с помощью предиката"s);
+        ASSERT_EQUAL_HINT(irrelevant_docs[0].id, 2, "В данном тестовом случае документ со статусом IRRELEVANT имеет id = 2"s);
+    }
+
+    //поиск документов с указанием статуса
+    {
+        SearchServer server;
+        server.AddDocument(1, content, DocumentStatus::BANNED, rating);
+        server.AddDocument(2, content, DocumentStatus::BANNED, rating);
+        server.AddDocument(3, content, DocumentStatus::BANNED, rating);
+        server.AddDocument(4, content, DocumentStatus::REMOVED, rating);
+
+        vector<Document> banned_docs = server.FindTopDocuments(query, DocumentStatus::BANNED);
+        vector<Document> removed_docs = server.FindTopDocuments(query, DocumentStatus::REMOVED);
+        ASSERT_EQUAL(static_cast<int>(banned_docs.size()), 3);
+        ASSERT_EQUAL(static_cast<int>(removed_docs.size()), 1); 
+    }
+
+    //поиск документов без указания статуса
+    {
+        SearchServer server;
+        server.AddDocument(1, content, DocumentStatus::ACTUAL, rating);
+        server.AddDocument(2, content, DocumentStatus::ACTUAL, rating);
+        server.AddDocument(3, content, DocumentStatus::ACTUAL, rating);
+        server.AddDocument(4, content, DocumentStatus::REMOVED, rating);
+        vector<Document> actual_docs = server.FindTopDocuments(query);
+        ASSERT_EQUAL(static_cast<int>(actual_docs.size()), 3);
+    }
+}
+
+void TestFiltratingByStatus() {
+    const vector<int> rating = {1, 2, 3};
+    const string content = "cat in the city"s;
+    const string query = "cat in the city"s;
+
     // с помощью предиката должен реализован поиск по статусу
     {
         SearchServer server;
@@ -539,19 +592,43 @@ void TestPredicatFiltrating() {
         ASSERT_EQUAL(server.FindTopDocuments(query, DocumentStatus::IRRELEVANT).size()*1, 1);
         ASSERT_EQUAL(server.FindTopDocuments(query, DocumentStatus::REMOVED).size()*1, 1);
     }
+}
 
-    //с помощью предиката должен быть реализован поиск по лямбда-функции
-    {  
+void TestRelevance() {
+    const vector<int> rating = {1, 2, 3};
+    const string content1 = "cat Saint-Petersburg"s;
+    const string content2 = "dog Moscow"s;
+    
+    // выведем два документа с одинаковой релевантностью
+    {
         SearchServer server;
-        server.AddDocument(1, content, DocumentStatus::ACTUAL, rating);
-        server.AddDocument(2, content, DocumentStatus::IRRELEVANT, rating);
-        server.AddDocument(3, content, DocumentStatus::BANNED, rating);
-        server.AddDocument(4, content, DocumentStatus::REMOVED, rating);
+        server.AddDocument(1, content1, DocumentStatus::ACTUAL, rating);
+        server.AddDocument(2, content2, DocumentStatus::ACTUAL, rating);
+        vector<Document> docs = server.FindTopDocuments("cat Moscow"s);
+        const double relevance1 = docs[0].relevance;
+        const double relevance2 = docs[1].relevance;
+        const double EPSILON = 1e-6; // используется для погрешности, т.к. сравниваем вещественные числа
+        ASSERT_HINT(abs(relevance1-relevance2) < EPSILON, "document's relevance must be relevance1 ≈ relevance2");
+    }
 
-        vector<Document> even_docs = server.FindTopDocuments(query, []( int document_id, [[maybe_unused]] DocumentStatus status, [[maybe_unused]] int rating) {
-            return document_id % 2 == 0;
-        });
-        ASSERT_EQUAL(even_docs.size(), 2);
+    //проверим, что релевантность одного документа выше, чем другого
+    {
+        SearchServer server;
+        server.AddDocument(1, content1, DocumentStatus::ACTUAL, rating);
+        server.AddDocument(2, content2, DocumentStatus::ACTUAL, rating);
+        vector<Document> docs = server.FindTopDocuments("cat dog Moscow"s);
+        const double relevance1 = docs[0].relevance; // тут релевантность выше, т.к. пересекаются два слова "dog, Moscow"
+        const double relevance2 = docs[1].relevance; // тут пересечение с одним словом "cat"
+        ASSERT(relevance1 > relevance2);
+    }
+
+    {
+        SearchServer server;
+        server.AddDocument(1, content1, DocumentStatus::ACTUAL, rating);
+        server.AddDocument(2, content2, DocumentStatus::ACTUAL, rating);
+        Document doc_with_word_cat = server.FindTopDocuments("cat"s)[0];
+        const double relevance = doc_with_word_cat.relevance;
+        ASSERT(relevance > 0.3 && relevance < 0.4); // relevance ≈ 0.34
     }
 }
 
@@ -564,6 +641,8 @@ void TestSearchServer() {
     RUN_TEST(TestSortByRelevance);
     RUN_TEST(TestRatingIsEqualArithmeticMeanOfTheDocumentsRatings);
     RUN_TEST(TestPredicatFiltrating);
+    RUN_TEST(TestFiltratingByStatus);
+    RUN_TEST(TestRelevance);
 }
 
 // --------- Окончание модульных тестов поисковой системы -----------
