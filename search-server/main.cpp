@@ -6,11 +6,13 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <numeric>
 #include <stdexcept>
 
 using namespace std;
 
 const int MAX_RESULT_DOCUMENT_COUNT = 5;
+const double EPSILON = 1e-6;
 
 string ReadLine() {
     string s;
@@ -42,7 +44,6 @@ vector<string> SplitIntoWords(const string& text) {
     if (!word.empty()) {
         words.push_back(word);
     }
-
     return words;
 }
 
@@ -50,9 +51,8 @@ struct Document {
     Document() = default;
 
     Document(int id, double relevance, int rating)
-        : id(id)
-        , relevance(relevance)
-        , rating(rating) {
+        : id(id), relevance(relevance), rating(rating) 
+    {
     }
 
     int id = 0;
@@ -84,11 +84,21 @@ public:
     explicit SearchServer(const StringContainer& stop_words)
         : stop_words_(MakeUniqueNonEmptyStrings(stop_words))
     {
-        for (const string& stop_word : stop_words_) {
-            if (!IsValidWord(stop_word)) {
-                throw invalid_argument("Наличие недопустимых симовлов в стоп-словах поисковой системы"s);
-            }
+        if (!all_of(stop_words_.begin(), stop_words_.end(), IsValidWord)) {
+            throw std::invalid_argument("Наличие недопустимых симовлов в стоп-словах поисковой системы"s);
         }
+        /*
+        Не до конца понял вашего замечания здесь: 
+        "Проверку стоп слов лучше перенести в метод SplitIntoWordsNoStop чтобы понимать в каком слове ошибка"
+        
+        Для прохождения задания в тренажере должно быть выполнено такое условие:
+        "Конструкторы класса SearchServer должны выбрасывать исключение invalid_argument,
+        если любое из переданных стоп-слов содержит недопустимые символы..."
+
+        Если я оставлю проверку только в методе SplitIntoWordsNoStop, то мое задание не пройдет тесты в тренажере.
+        Наставники посоветовали здесь в конструторе воспользоваться конструкцией all_of.
+        В метод SplitIntoWordsNoStop проверку на валидность я добавил. Спасибо за ревью)
+        */
     }
 
     explicit SearchServer(const string& stop_words_text)
@@ -104,14 +114,14 @@ public:
         if (documents_.count(document_id)) {
             throw invalid_argument("Попытка добавить документ с id ранее добавленного аргумента"s);
         }
+        // Метод SplitIntoWordsNoStop выбросит исключение invalid_argument, если
+        // в словах документа есть недопустимые символы 
         const vector<string> words = SplitIntoWordsNoStop(document);
         const double inv_word_count = 1.0 / words.size();
         for (const string& word : words) {
-            if (!IsValidWord(word)) {
-                throw invalid_argument("Наличие недопустимых символов в тексте добавляемого документа"s);
-            };
             word_to_document_freqs_[word][document_id] += inv_word_count;
         }
+        id_index_list_.push_back(document_id);
         documents_.emplace(document_id, DocumentData{ ComputeAverageRating(ratings), status });
     }
 
@@ -125,7 +135,7 @@ public:
         auto matched_documents = FindAllDocuments(query, document_predicate);
         sort(matched_documents.begin(), matched_documents.end(),
             [](const Document& lhs, const Document& rhs) {
-                if (abs(lhs.relevance - rhs.relevance) < 1e-6) {
+                if (abs(lhs.relevance - rhs.relevance) < EPSILON) {
                     return lhs.rating > rhs.rating;
                 }
                 else {
@@ -184,14 +194,7 @@ public:
         if (index < 0 || index > GetDocumentCount()) {
             throw out_of_range("Индекс переданного документа выходит за пределы допустимого диапазона"s);
         }
-        int i = 0;
-        for (const auto& [key, value] : documents_) {
-            if (i == index) {
-                return key;
-            }
-            ++i;
-        }
-        throw runtime_error("Ошибка в функции GetDocumentCount. Индекс не найден."s);
+        return id_index_list_.at(static_cast<size_t>(index));
     }
 
 private:
@@ -202,6 +205,7 @@ private:
     const set<string> stop_words_;
     map<string, map<int, double>> word_to_document_freqs_;
     map<int, DocumentData> documents_;
+    vector<int> id_index_list_;
 
     bool IsStopWord(const string& word) const {
         return stop_words_.count(word) > 0;
@@ -210,6 +214,9 @@ private:
     vector<string> SplitIntoWordsNoStop(const string& text) const {
         vector<string> words;
         for (const string& word : SplitIntoWords(text)) {
+            if (!IsValidWord(word)) {
+                throw std::invalid_argument("Наличие недопустимых симовлов в документе"s);
+            }
             if (!IsStopWord(word)) {
                 words.push_back(word);
             }
@@ -221,10 +228,7 @@ private:
         if (ratings.empty()) {
             return 0;
         }
-        int rating_sum = 0;
-        for (const int rating : ratings) {
-            rating_sum += rating;
-        }
+        const int rating_sum = std::accumulate(ratings.begin(), ratings.end(), 0);
         return rating_sum / static_cast<int>(ratings.size());
     }
 
